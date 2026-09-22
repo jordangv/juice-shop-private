@@ -9,7 +9,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import * as security from '../../lib/insecurity'
 import type { UserModel } from '@juice-shop/models/user'
-import type { Request } from 'express'
+import type { Request, Response, NextFunction } from 'express'
 
 void describe('insecurity', () => {
   void describe('cutOffPoisonNullByte', () => {
@@ -185,6 +185,37 @@ void describe('insecurity', () => {
 
     void it('cannot be bypassed by exploiting lack of recursive sanitization', () => {
       assert.equal(security.sanitizeSecure('Bla<<script>Foo</script>iframe src="javascript:alert(`xss`)">Blubb'), 'BlaBlubb')
+    })
+  })
+
+  void describe('denyAll', () => {
+    const rejectionFor = (headers: Record<string, string>) => {
+      let forwarded: (Error & { status?: number }) | undefined
+      security.denyAll()(
+        { headers, method: 'PUT', url: '/api/Users/1' } as unknown as Request,
+        {} as unknown as Response,
+        ((error?: Error & { status?: number }) => { forwarded = error }) as NextFunction
+      )
+      return forwarded
+    }
+
+    void it('rejects requests without any credentials with 401', () => {
+      const rejection = rejectionFor({})
+      assert.ok(rejection instanceof Error)
+      assert.equal(rejection.status, 401)
+    })
+
+    void it('rejects requests with an unsigned ("alg": "none") token with 401', () => {
+      const unsignedToken = 'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJkYXRhIjp7ImVtYWlsIjoiand0bjNkQGp1aWNlLXNoLm9wIn0sImlhdCI6MTUwODYzOTYxMiwiZXhwIjo5OTk5OTk5OTk5fQ.'
+      const rejection = rejectionFor({ authorization: `Bearer ${unsignedToken}` })
+      assert.ok(rejection instanceof Error)
+      assert.equal(rejection.status, 401)
+    })
+
+    void it('rejects requests with a regularly signed token with 401', () => {
+      const rejection = rejectionFor({ authorization: `Bearer ${security.authorize({ data: { email: 'admin@juice-sh.op', role: 'admin' } })}` })
+      assert.ok(rejection instanceof Error)
+      assert.equal(rejection.status, 401)
     })
   })
 
