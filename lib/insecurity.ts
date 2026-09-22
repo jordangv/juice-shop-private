@@ -50,7 +50,14 @@ export const cutOffPoisonNullByte = (str: string) => {
 }
 
 export const isAuthorized = () => expressJwt(({ secret: publicKey }) as any)
-export const denyAll = () => expressJwt({ secret: '' + Math.random() } as any)
+/* Guard for endpoints that must be reachable by nobody, not even an authenticated admin.
+   It must not be built on top of a JWT verifier: the accepted algorithm is taken from the
+   attacker-supplied token header, so an unsigned ("alg": "none") token satisfies any
+   configured secret and turns "deny everyone" into "allow anyone". This rejects every
+   request unconditionally, with the same 401 UnauthorizedError the JWT-based guard raised. */
+export const denyAll = () => (_req: Request, _res: Response, next: NextFunction) => {
+  next(Object.assign(new Error('Access to this endpoint is forbidden'), { name: 'UnauthorizedError', status: 401, code: 'access_denied' }))
+}
 export const authorize = (user = {}) => jwt.sign(user, privateKey, { expiresIn: '6h', algorithm: 'RS256' })
 export const verify = (token: string) => token ? (jws.verify as ((token: string, secret: string) => boolean))(token, publicKey) : false
 export const decode = (token: string) => { return jws.decode(token)?.payload }
