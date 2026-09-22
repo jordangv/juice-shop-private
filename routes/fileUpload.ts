@@ -138,3 +138,6 @@ export {
   handleXmlUpload,
   handleYamlUpload
 }
+
+// CI baseline marker: comment-only change so the pipeline's paths filter fires on
+// otherwise-unmodified code at a159f2e0. Delete this branch once the run is read.
