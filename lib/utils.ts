@@ -86,6 +86,28 @@ export const ctfFlag = (text: string) => {
   return crypto.createHmac('sha1', getCtfKey()).update(text).digest('hex')
 }
 
+const continueCodeMacLength = 64
+const continueCodeMac = (domain: string, code: string) => {
+  return crypto.createHmac('sha256', getCtfKey()).update(domain + ':' + code).digest('hex')
+}
+
+export const signContinueCode = (domain: string, code: string) => {
+  return code + continueCodeMac(domain, code)
+}
+
+export const verifyContinueCode = (domain: string, signedCode: string): string | undefined => {
+  if (signedCode.length <= continueCodeMacLength) {
+    return undefined
+  }
+  const code = signedCode.slice(0, -continueCodeMacLength)
+  const mac = Buffer.from(signedCode.slice(-continueCodeMacLength))
+  const expectedMac = Buffer.from(continueCodeMac(domain, code))
+  if (mac.length !== expectedMac.length || !crypto.timingSafeEqual(mac, expectedMac)) {
+    return undefined
+  }
+  return code
+}
+
 export const toMMMYY = (date: Date) => {
   const month = date.getMonth()
   const year = date.getFullYear()
