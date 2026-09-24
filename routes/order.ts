@@ -32,6 +32,10 @@ interface Product {
 export function placeOrder () {
   return (req: Request, res: Response, next: NextFunction) => {
     const id = req.params.id
+    if (req.body?.couponData && typeof req.body.couponData !== 'string') {
+      res.status(400).json({ error: 'Invalid coupon data.' })
+      return
+    }
     BasketModel.findOne({ where: { id }, include: [{ model: ProductModel, paranoid: false, as: 'Products' }] })
       .then(async (basket: BasketModel | null) => {
         if (basket != null) {
@@ -40,34 +44,7 @@ export function placeOrder () {
           const orderId = security.hash(email).slice(0, 4) + '-' + utils.randomHexString(16)
           const pdfFile = `order_${orderId}.pdf`
           const { default: PDFDocument } = await import('pdfkit')
-          const doc = new PDFDocument()
           const date = new Date().toJSON().slice(0, 10)
-          const fileWriter = doc.pipe(fs.createWriteStream(path.join('ftp/', pdfFile)))
-
-          fileWriter.on('finish', () => {
-            void (async () => {
-              try {
-                void basket.update({ coupon: null })
-                await BasketItemModel.destroy({ where: { BasketId: id } })
-                res.json({ orderConfirmation: orderId })
-              } catch (error: unknown) {
-                next(error)
-              }
-            })()
-          })
-
-          doc.font('Times-Roman').fontSize(40).text(config.get<string>('application.name'), { align: 'center' })
-          doc.moveTo(70, 115).lineTo(540, 115).stroke()
-          doc.moveTo(70, 120).lineTo(540, 120).stroke()
-          doc.fontSize(20).moveDown()
-          doc.font('Times-Roman').fontSize(20).text(req.__('Order Confirmation'), { align: 'center' })
-          doc.fontSize(20).moveDown()
-          doc.font('Times-Roman').fontSize(15).text(`${req.__('Customer')}: ${email}`, { align: 'left' })
-          doc.font('Times-Roman').fontSize(15).text(`${req.__('Order')} #: ${orderId}`, { align: 'left' })
-          doc.moveDown()
-          doc.font('Times-Roman').fontSize(15).text(`${req.__('Date')}: ${date}`, { align: 'left' })
-          doc.moveDown()
-          doc.moveDown()
           let totalPrice = 0
           const basketProducts: Product[] = []
           let totalPoints = 0
@@ -101,19 +78,14 @@ export function placeOrder () {
                 bonus: itemBonus
               }
               basketProducts.push(product)
-              doc.text(`${BasketItem.quantity}x ${req.__(name)} ${req.__('ea.')} ${itemPrice} = ${itemTotal}¤`)
-              doc.moveDown()
               totalPrice += itemTotal
               totalPoints += itemBonus
             }
           }
-          doc.moveDown()
           const discount = calculateApplicableDiscount(basket, req) ?? 0
           let discountAmount = '0'
           if (discount > 0) {
             discountAmount = (totalPrice * (discount / 100)).toFixed(2)
-            doc.text(discount + '% discount from coupon: -' + discountAmount + '¤')
-            doc.moveDown()
             totalPrice -= parseFloat(discountAmount)
           }
           const deliveryMethod = {
@@ -131,15 +103,6 @@ export function placeOrder () {
           }
           const deliveryAmount = security.isDeluxe(req) ? deliveryMethod.deluxePrice : deliveryMethod.price
           totalPrice += deliveryAmount
-          doc.text(`${req.__('Delivery Price')}: ${deliveryAmount.toFixed(2)}¤`)
-          doc.moveDown()
-          doc.font('Helvetica-Bold').fontSize(20).text(`${req.__('Total Price')}: ${totalPrice.toFixed(2)}¤`)
-          doc.moveDown()
-          doc.font('Helvetica-Bold').fontSize(15).text(`${req.__('Bonus Points Earned')}: ${totalPoints}`)
-          doc.font('Times-Roman').fontSize(15).text(`(${req.__('The bonus points from this order will be added 1:1 to your wallet ¤-fund for future purchases!')}`)
-          doc.moveDown()
-          doc.moveDown()
-          doc.font('Times-Roman').fontSize(15).text(req.__('Thank you for your order!'))
 
           challengeUtils.solveIf(challenges.negativeOrderChallenge, () => { return totalPrice < 0 })
 
@@ -174,6 +137,53 @@ export function placeOrder () {
             deliveryPrice: deliveryAmount,
             eta: deliveryMethod.eta.toString()
           }).then(() => {
+            // The confirmation PDF is only opened once the order has been validated and stored,
+            // so none of the error exits above can leave its file descriptor open.
+            const doc = new PDFDocument()
+            const fileWriter = doc.pipe(fs.createWriteStream(path.join('ftp/', pdfFile)))
+
+            fileWriter.on('finish', () => {
+              void (async () => {
+                try {
+                  void basket.update({ coupon: null })
+                  await BasketItemModel.destroy({ where: { BasketId: id } })
+                  res.json({ orderConfirmation: orderId })
+                } catch (error: unknown) {
+                  next(error)
+                }
+              })()
+            })
+
+            doc.font('Times-Roman').fontSize(40).text(config.get<string>('application.name'), { align: 'center' })
+            doc.moveTo(70, 115).lineTo(540, 115).stroke()
+            doc.moveTo(70, 120).lineTo(540, 120).stroke()
+            doc.fontSize(20).moveDown()
+            doc.font('Times-Roman').fontSize(20).text(req.__('Order Confirmation'), { align: 'center' })
+            doc.fontSize(20).moveDown()
+            doc.font('Times-Roman').fontSize(15).text(`${req.__('Customer')}: ${email}`, { align: 'left' })
+            doc.font('Times-Roman').fontSize(15).text(`${req.__('Order')} #: ${orderId}`, { align: 'left' })
+            doc.moveDown()
+            doc.font('Times-Roman').fontSize(15).text(`${req.__('Date')}: ${date}`, { align: 'left' })
+            doc.moveDown()
+            doc.moveDown()
+            for (const product of basketProducts) {
+              doc.text(`${product.quantity}x ${product.name} ${req.__('ea.')} ${product.price} = ${product.total}¤`)
+              doc.moveDown()
+            }
+            doc.moveDown()
+            if (discount > 0) {
+              doc.text(discount + '% discount from coupon: -' + discountAmount + '¤')
+              doc.moveDown()
+            }
+            doc.text(`${req.__('Delivery Price')}: ${deliveryAmount.toFixed(2)}¤`)
+            doc.moveDown()
+            doc.font('Helvetica-Bold').fontSize(20).text(`${req.__('Total Price')}: ${totalPrice.toFixed(2)}¤`)
+            doc.moveDown()
+            doc.font('Helvetica-Bold').fontSize(15).text(`${req.__('Bonus Points Earned')}: ${totalPoints}`)
+            doc.font('Times-Roman').fontSize(15).text(`(${req.__('The bonus points from this order will be added 1:1 to your wallet ¤-fund for future purchases!')}`)
+            doc.moveDown()
+            doc.moveDown()
+            doc.font('Times-Roman').fontSize(15).text(req.__('Thank you for your order!'))
             doc.end()
           }).catch((error: unknown) => {
             next(error)
