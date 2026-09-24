@@ -7,12 +7,18 @@ import { describe, it, before } from 'node:test'
 import assert from 'node:assert/strict'
 import request from 'supertest'
 import type { Express } from 'express'
+import Hashids from 'hashids/cjs'
+import { Op } from 'sequelize'
 import { createTestApp } from './helpers/setup'
 import * as security from '../../lib/insecurity'
 import { ChallengeDependencyModelInit } from '../../models/challengeDependency'
+import { ChallengeModel } from '../../models/challenge'
+import { challenges } from '../../data/datacache'
 
 let app: Express
 const authHeader = { Authorization: 'Bearer ' + security.authorize(), 'content-type': 'application/json' }
+const hashidsAlphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
+const allChallengeIds = () => Object.values(challenges).map(challenge => challenge.id)
 
 before(async () => {
   const result = await createTestApp()
@@ -100,15 +106,34 @@ void describe('/rest/continue-code', () => {
   })
 
   void it('PUT continue code for more than one challenge is accepted', async () => {
+    const restored = [challenges.scoreBoardChallenge, challenges.adminSectionChallenge]
+    for (const challenge of restored) challenge.solved = true
+    const { body } = await request(app)
+      .get('/rest/continue-code')
+    for (const challenge of restored) challenge.solved = false
+
     const res = await request(app)
-      .put('/rest/continue-code/apply/yXjv6Z5jWJnzD6a3YvmwPRXK7roAyzHDde2Og19yEN84plqxkMBbLVQrDeoY')
+      .put('/rest/continue-code/apply/' + body.continueCode)
     assert.equal(res.status, 200)
+    for (const challenge of restored) assert.equal(challenge.solved, true)
+  })
+
+  void it('PUT forged continue code for real challenges is rejected', async () => {
+    const unsolved = Object.values(challenges).filter(challenge => !challenge.solved)
+    assert.ok(unsolved.length > 0)
+    const forgedCode = new Hashids('this is my salt', 60, hashidsAlphabet).encode(allChallengeIds())
+
+    const res = await request(app)
+      .put('/rest/continue-code/apply/' + forgedCode)
+    assert.equal(res.status, 404)
+    for (const challenge of unsolved) assert.equal(challenge.solved, false)
   })
 
   void it('PUT continue code for non-existent challenge #999 is accepted', async () => {
     const res = await request(app)
       .put('/rest/continue-code/apply/69OxrZ8aJEgxONZyWoz1Dw4BvXmRGkM6Ae9M7k2rK63YpqQLPjnlb5V5LvDj')
     assert.equal(res.status, 200)
+    assert.equal(challenges.continueCodeChallenge.solved, true)
   })
 })
 
@@ -132,9 +157,26 @@ void describe('/rest/continue-code-findIt', () => {
   })
 
   void it('PUT continue code for more than one challenge is accepted', async () => {
+    const keys = [challenges.scoreBoardChallenge.key, challenges.adminSectionChallenge.key]
+    await ChallengeModel.update({ codingChallengeStatus: 1 }, { where: { key: keys } })
+    const { body } = await request(app)
+      .get('/rest/continue-code-findIt')
+    await ChallengeModel.update({ codingChallengeStatus: 0 }, { where: { key: keys } })
+
     const res = await request(app)
-      .put('/rest/continue-code-findIt/apply/Xg9oK0VdbW5g1KX9G7JYnqLpz3rAPBh6p4eRlkDM6EaBON2QoPmxjyvwMrP6')
+      .put('/rest/continue-code-findIt/apply/' + body.continueCode)
     assert.equal(res.status, 200)
+    assert.equal(await ChallengeModel.count({ where: { key: keys, codingChallengeStatus: 1 } }), 2)
+  })
+
+  void it('PUT forged continue code for real challenges is rejected', async () => {
+    const solvedBefore = await ChallengeModel.count({ where: { codingChallengeStatus: { [Op.gte]: 1 } } })
+    const forgedCode = new Hashids('this is the salt for findIt challenges', 60, hashidsAlphabet).encode(allChallengeIds())
+
+    const res = await request(app)
+      .put('/rest/continue-code-findIt/apply/' + forgedCode)
+    assert.equal(res.status, 404)
+    assert.equal(await ChallengeModel.count({ where: { codingChallengeStatus: { [Op.gte]: 1 } } }), solvedBefore)
   })
 })
 
@@ -158,8 +200,35 @@ void describe('/rest/continue-code-fixIt', () => {
   })
 
   void it('PUT continue code for more than one challenge is accepted', async () => {
+    const keys = [challenges.scoreBoardChallenge.key, challenges.adminSectionChallenge.key]
+    await ChallengeModel.update({ codingChallengeStatus: 2 }, { where: { key: keys } })
+    const { body } = await request(app)
+      .get('/rest/continue-code-fixIt')
+    await ChallengeModel.update({ codingChallengeStatus: 0 }, { where: { key: keys } })
+
     const res = await request(app)
-      .put('/rest/continue-code-fixIt/apply/y28BEPE2k3yRrdz5p6DGqJONnj41n5UEWawYWgBMoVmL79bKZ8Qve0Xl5QLW')
+      .put('/rest/continue-code-fixIt/apply/' + body.continueCode)
     assert.equal(res.status, 200)
+    assert.equal(await ChallengeModel.count({ where: { key: keys, codingChallengeStatus: 2 } }), 2)
+  })
+
+  void it('PUT forged continue code for real challenges is rejected', async () => {
+    const solvedBefore = await ChallengeModel.count({ where: { codingChallengeStatus: 2 } })
+    const forgedCode = new Hashids('yet another salt for the fixIt challenges', 60, hashidsAlphabet).encode(allChallengeIds())
+
+    const res = await request(app)
+      .put('/rest/continue-code-fixIt/apply/' + forgedCode)
+    assert.equal(res.status, 404)
+    assert.equal(await ChallengeModel.count({ where: { codingChallengeStatus: 2 } }), solvedBefore)
+  })
+
+  void it('PUT continue code issued for Find It phase is rejected', async () => {
+    const { body } = await request(app)
+      .get('/rest/continue-code-findIt')
+    assert.ok(body.continueCode)
+
+    const res = await request(app)
+      .put('/rest/continue-code-fixIt/apply/' + body.continueCode)
+    assert.equal(res.status, 404)
   })
 })

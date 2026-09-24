@@ -8,6 +8,7 @@ import { type Request, type Response } from 'express'
 import { ChallengeModel } from '../models/challenge'
 import { challenges } from '../data/datacache'
 import { Op } from 'sequelize'
+import * as utils from '../lib/utils'
 
 export function continueCode () {
   const hashids = new Hashids('this is my salt', 60, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890')
@@ -16,7 +17,7 @@ export function continueCode () {
     for (const challenge of Object.values(challenges)) {
       if (challenge.solved) ids.push(challenge.id)
     }
-    const continueCode = ids.length > 0 ? hashids.encode(ids) : undefined
+    const continueCode = ids.length > 0 ? utils.signContinueCode('continueCode', hashids.encode(ids)) : undefined
     res.json({ continueCode })
   }
 }
@@ -29,7 +30,7 @@ export function continueCodeFindIt () {
     for (const challenge of challenges) {
       ids.push(challenge.id)
     }
-    const continueCode = ids.length > 0 ? hashids.encode(ids) : undefined
+    const continueCode = ids.length > 0 ? utils.signContinueCode('continueCodeFindIt', hashids.encode(ids)) : undefined
     res.json({ continueCode })
   }
 }
@@ -42,7 +43,7 @@ export function continueCodeFixIt () {
     for (const challenge of challenges) {
       ids.push(challenge.id)
     }
-    const continueCode = ids.length > 0 ? hashids.encode(ids) : undefined
+    const continueCode = ids.length > 0 ? utils.signContinueCode('continueCodeFixIt', hashids.encode(ids)) : undefined
     res.json({ continueCode })
   }
 }

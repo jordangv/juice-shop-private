@@ -9,6 +9,25 @@ import type { ChallengeModel } from '@juice-shop/models/challenge'
 import * as utils from '../../lib/utils'
 
 void describe('utils', () => {
+  void describe('signContinueCode / verifyContinueCode', () => {
+    void it('returns the original code for a code signed in the same domain', () => {
+      assert.equal(utils.verifyContinueCode('continueCode', utils.signContinueCode('continueCode', 'abc123')), 'abc123')
+    })
+
+    void it('rejects an unsigned code', () => {
+      assert.equal(utils.verifyContinueCode('continueCode', 'yXjv6Z5jWJnzD6a3YvmwPRXK7roAyzHDde2Og19yEN84plqxkMBbLVQrDeoY'), undefined)
+    })
+
+    void it('rejects a signed code whose payload was altered', () => {
+      const signed = utils.signContinueCode('continueCode', 'abc123')
+      assert.equal(utils.verifyContinueCode('continueCode', 'abc124' + signed.slice(6)), undefined)
+    })
+
+    void it('rejects a code signed for a different domain', () => {
+      assert.equal(utils.verifyContinueCode('continueCodeFixIt', utils.signContinueCode('continueCodeFindIt', 'abc123')), undefined)
+    })
+  })
+
   void describe('toSimpleIpAddress', () => {
     void it('returns ipv6 address unchanged', () => {
       assert.equal(utils.toSimpleIpAddress('2001:0db8:85a3:0000:0000:8a2e:0370:7334'), '2001:0db8:85a3:0000:0000:8a2e:0370:7334')

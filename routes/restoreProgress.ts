@@ -7,6 +7,7 @@ import Hashids from 'hashids/cjs'
 import { type Request, type Response } from 'express'
 
 import * as challengeUtils from '../lib/challengeUtils'
+import * as utils from '../lib/utils'
 import { challenges } from '../data/datacache'
 
 const hashidsAlphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890'
@@ -20,11 +21,12 @@ export function restoreProgress () {
     if (!hashidRegexp.test(continueCode)) {
       return res.status(404).send(invalidContinueCode)
     }
-    const ids = hashids.decode(continueCode)
+    const verifiedCode = utils.verifyContinueCode('continueCode', continueCode)
+    const ids = hashids.decode(verifiedCode ?? continueCode)
     if (challengeUtils.notSolved(challenges.continueCodeChallenge) && ids.includes(999)) {
       challengeUtils.solve(challenges.continueCodeChallenge)
       res.end()
-    } else if (ids.length > 0) {
+    } else if (verifiedCode !== undefined && ids.length > 0) {
       for (const challenge of Object.values(challenges)) {
         if (ids.includes(challenge.id)) {
           challengeUtils.solve(challenge, true)
@@ -44,7 +46,11 @@ export function restoreProgressFindIt () {
     if (!hashidRegexp.test(continueCodeFindIt)) {
       return res.status(404).send(invalidContinueCode)
     }
-    const idsFindIt = hashids.decode(continueCodeFindIt)
+    const verifiedCodeFindIt = utils.verifyContinueCode('continueCodeFindIt', continueCodeFindIt)
+    if (verifiedCodeFindIt === undefined) {
+      return res.status(404).send(invalidContinueCode)
+    }
+    const idsFindIt = hashids.decode(verifiedCodeFindIt)
     if (idsFindIt.length > 0) {
       for (const challenge of Object.values(challenges)) {
         if (idsFindIt.includes(challenge.id)) {
@@ -65,7 +71,11 @@ export function restoreProgressFixIt () {
     if (!hashidRegexp.test(continueCodeFixIt)) {
       return res.status(404).send(invalidContinueCode)
     }
-    const idsFixIt = hashids.decode(continueCodeFixIt)
+    const verifiedCodeFixIt = utils.verifyContinueCode('continueCodeFixIt', continueCodeFixIt)
+    if (verifiedCodeFixIt === undefined) {
+      return res.status(404).send(invalidContinueCode)
+    }
+    const idsFixIt = hashids.decode(verifiedCodeFixIt)
     if (idsFixIt.length > 0) {
       for (const challenge of Object.values(challenges)) {
         if (idsFixIt.includes(challenge.id)) {
