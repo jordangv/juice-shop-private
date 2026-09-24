@@ -74,10 +74,26 @@ export const sanitizeSecure = (html: string): string => {
   }
 }
 
+/* Tokens cached by updateAuthenticatedUsers() are taken from the request before any
+   authentication check, so they are tracked in a separate, size-bounded pool and the oldest
+   ones are dropped once the budget is exceeded. Entries the server stores itself through
+   put() (login, 2FA verification, deluxe/profile updates, updateFrom) are never part of
+   this pool, so unauthenticated traffic cannot evict them; a put() for a token that was
+   cached pre-auth takes it out of the pool. */
+const preAuthCacheBudget = 2 * 1024 * 1024 // approximate characters of cached token text
+const preAuthEntryOverhead = 1024 // flat per-entry cost so that tiny tokens are bounded too
+const preAuthTokens = new Map<string, number>()
+let preAuthCacheSize = 0
+
 export const authenticatedUsers: IAuthenticatedUsers = {
   tokenMap: {},
   idMap: {},
   put: function (token: string, user: ResponseWithUser) {
+    const preAuthCost = preAuthTokens.get(token)
+    if (preAuthCost !== undefined) {
+      preAuthTokens.delete(token)
+      preAuthCacheSize -= preAuthCost
+    }
     this.tokenMap[token] = user
     this.idMap[user.data.id] = token
   },
@@ -190,12 +206,29 @@ export const appendUserId = () => {
   }
 }
 
+const putPreAuth = (token: string, user: ResponseWithUser) => {
+  authenticatedUsers.put(token, user)
+  const cost = token.length + preAuthEntryOverhead
+  preAuthTokens.set(token, cost)
+  preAuthCacheSize += cost
+  for (const [oldestToken, oldestCost] of preAuthTokens) {
+    if (preAuthCacheSize <= preAuthCacheBudget) break
+    preAuthTokens.delete(oldestToken)
+    preAuthCacheSize -= oldestCost
+    const evicted = authenticatedUsers.tokenMap[oldestToken]
+    delete authenticatedUsers.tokenMap[oldestToken]
+    if (evicted !== undefined && authenticatedUsers.idMap[evicted.data.id] === oldestToken) {
+      delete authenticatedUsers.idMap[evicted.data.id]
+    }
+  }
+}
+
 export const updateAuthenticatedUsers = () => (req: Request, res: Response, next: NextFunction) => {
   const token = req.cookies.token || utils.jwtFrom(req)
   if (token && authenticatedUsers.get(token) === undefined) {
     jwt.verify(token, publicKey, (err: Error | null, decoded: any) => {
       if (err === null && decoded?.data !== undefined) {
-        authenticatedUsers.put(token, decoded)
+        putPreAuth(token, decoded)
         res.cookie('token', token)
       }
     })

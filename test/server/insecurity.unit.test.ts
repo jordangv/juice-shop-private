@@ -5,7 +5,7 @@
 
 // @ts-expect-error FIXME no typescript definitions for z85 :(
 import z85 from 'z85'
-import { describe, it } from 'node:test'
+import { describe, it, mock } from 'node:test'
 import assert from 'node:assert/strict'
 import * as security from '../../lib/insecurity'
 import type { UserModel } from '@juice-shop/models/user'
@@ -108,6 +108,68 @@ void describe('insecurity', () => {
     void it('returns undefined if no token is present in request', () => {
       assert.equal(security.authenticatedUsers.from({ headers: {} } as unknown as Request), undefined)
       assert.equal(security.authenticatedUsers.from({} as unknown as Request), undefined)
+    })
+  })
+
+  void describe('updateAuthenticatedUsers', () => {
+    const unsignedToken = (payload: object) => `${Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')}.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.`
+    const requestWith = (token: string) => ({ cookies: {}, headers: { authorization: `Bearer ${token}` }, body: {} }) as unknown as Request
+    const sendThroughMiddleware = (token: string) => {
+      const res = { cookie: mock.fn() }
+      const next = mock.fn()
+      security.updateAuthenticatedUsers()(requestWith(token), res as unknown as Response, next as unknown as NextFunction)
+      assert.equal(next.mock.calls.length, 1)
+      return res
+    }
+    const floodWithUnsignedTokens = (count: number, firstId: number) => {
+      const tokens = []
+      for (let i = 0; i < count; i++) {
+        const token = unsignedToken({ data: { id: firstId + i, email: `flood${firstId + i}@juice-sh.op`, padding: 'x'.repeat(8 * 1024) }, exp: 9999999999 })
+        sendThroughMiddleware(token)
+        tokens.push(token)
+      }
+      return tokens
+    }
+
+    void it('caches a token presented before authentication and echoes it back as cookie', () => {
+      const token = unsignedToken({ data: { id: 900001, email: 'jwtn3d@juice-sh.op' }, exp: 9999999999 })
+
+      const res = sendThroughMiddleware(token)
+
+      assert.equal(security.authenticatedUsers.get(token)?.data.email, 'jwtn3d@juice-sh.op')
+      assert.deepEqual(res.cookie.mock.calls[0].arguments, ['token', token])
+    })
+
+    void it('does not retain every token presented before authentication', () => {
+      const cachedBefore = Object.keys(security.authenticatedUsers.tokenMap).length
+
+      const tokens = floodWithUnsignedTokens(1000, 910000)
+
+      assert.equal(security.authenticatedUsers.get(tokens[0]), undefined)
+      assert.equal(security.authenticatedUsers.tokenOf({ id: 910000 } as unknown as UserModel), undefined)
+      assert.equal(security.authenticatedUsers.get(tokens[tokens.length - 1])?.data.id, 910999)
+      assert.ok(Object.keys(security.authenticatedUsers.tokenMap).length - cachedBefore < tokens.length / 2)
+      assert.ok(Object.keys(security.authenticatedUsers.idMap).length < tokens.length / 2)
+    })
+
+    void it('never evicts sessions stored by the server while flooded with tokens presented before authentication', () => {
+      const loginToken = security.authorize({ data: { id: 920001, email: 'jim@juice-sh.op' } })
+      security.authenticatedUsers.put(loginToken, { status: 'success', data: { id: 920001, email: 'jim@juice-sh.op' } as unknown as UserModel, bid: 7 })
+
+      const setupToken = security.authorize({ data: { id: 920002, email: 'wurstbrot@juice-sh.op', totpSecret: '' } })
+      sendThroughMiddleware(setupToken)
+      security.authenticatedUsers.updateFrom(requestWith(setupToken), { status: 'success', data: { id: 920002, email: 'wurstbrot@juice-sh.op', totpSecret: 'IFTXE3SPOEYVURT2MRYGI52TKJ4HC3KH' } as unknown as UserModel })
+
+      floodWithUnsignedTokens(1000, 930000)
+
+      assert.equal(security.authenticatedUsers.from(requestWith(loginToken))?.bid, 7)
+      assert.equal(security.authenticatedUsers.tokenOf({ id: 920001 } as unknown as UserModel), loginToken)
+      const memoryRequest = requestWith(loginToken)
+      const next = mock.fn()
+      security.appendUserId()(memoryRequest, {} as unknown as Response, next as unknown as NextFunction)
+      assert.equal(next.mock.calls.length, 1)
+      assert.equal(memoryRequest.body.UserId, 920001)
+      assert.equal(security.authenticatedUsers.from(requestWith(setupToken))?.data.totpSecret, 'IFTXE3SPOEYVURT2MRYGI52TKJ4HC3KH')
     })
   })
 
