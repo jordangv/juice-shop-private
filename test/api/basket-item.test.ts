@@ -235,4 +235,31 @@ void describe('/api/BasketItems/:id', () => {
       .send({ quantity: 1 })
     assert.equal(res.status, 500)
   })
+
+  void it('PUT update quantity of basket item without product quantity returns an error instead of crashing the server', { timeout: 10000 }, async () => {
+    const createRes = await request(app)
+      .post('/api/BasketItems')
+      .set(authHeader)
+      .send('{"ProductId":1,"BasketId":2,"quantity":1,"nested":{"ProductId":null}}')
+    assert.equal(createRes.status, 200)
+
+    const res = await request(app)
+      .put('/api/BasketItems/' + createRes.body.data.id)
+      .set(authHeader)
+      .send({ quantity: 1 })
+    assert.equal(res.status, 500)
+
+    const legitCreateRes = await request(app)
+      .post('/api/BasketItems')
+      .set(authHeader)
+      .send({ BasketId: 2, ProductId: 5, quantity: 1 })
+    assert.equal(legitCreateRes.status, 200)
+
+    const legitRes = await request(app)
+      .put('/api/BasketItems/' + legitCreateRes.body.data.id)
+      .set(authHeader)
+      .send({ quantity: 2 })
+    assert.equal(legitRes.status, 200)
+    assert.equal(legitRes.body.data.quantity, 2)
+  })
 })
