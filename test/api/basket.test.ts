@@ -3,8 +3,11 @@
  * SPDX-License-Identifier: MIT
  */
 
-import { describe, it, before } from 'node:test'
+import { describe, it, before, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
+import fs from 'node:fs'
+import path from 'node:path'
 import request from 'supertest'
 import type { Express } from 'express'
 import config from 'config'
@@ -21,6 +24,23 @@ let authHeader: { Authorization: string, 'content-type': string }
 const validCoupon = security.generateCoupon(15)
 const outdatedCoupon = security.generateCoupon(20, new Date(2001, 0, 1))
 const forgedCoupon = security.generateCoupon(99)
+
+// Records every order confirmation file stream opened by this test process, together with the bytes piped into it.
+// Only this process' own streams are inspected, because ftp/ is shared with (and cleaned up by) concurrently running API test files.
+function spyOnOrderFileStreams (t: TestContext) {
+  const createWriteStream = fs.createWriteStream
+  const orderFileStreams: Array<{ file: string, stream: fs.WriteStream, bytes: Buffer[] }> = []
+  t.mock.method(fs, 'createWriteStream', (file: fs.PathLike, options?: Parameters<typeof fs.createWriteStream>[1]) => {
+    const stream = createWriteStream(file, options)
+    if (path.basename(String(file)).startsWith('order_')) {
+      const orderFileStream = { file: String(file), stream, bytes: [] as Buffer[] }
+      stream.once('pipe', (source) => { source.on('data', (chunk: Buffer) => { orderFileStream.bytes.push(chunk) }) })
+      orderFileStreams.push(orderFileStream)
+    }
+    return stream
+  })
+  return orderFileStreams
+}
 
 before(
   async () => {
@@ -198,6 +218,47 @@ void describe('/rest/basket/:id/checkout', () => {
       assert.equal(res.status, 500)
       assert.match(res.text, /Insert error/)
     })
+  })
+})
+
+void describe('/rest/basket/:id/checkout order confirmation file', () => {
+  void it('POST placing an order with non-string couponData is refused before an order file is opened', async (t) => {
+    const orderFileStreams = spyOnOrderFileStreams(t)
+    const statuses: number[] = []
+    for (const couponData of [1, true, { code: 'WMNSDY2019' }]) {
+      const res = await request(app).post('/rest/basket/1/checkout').set(authHeader).send({ couponData })
+      statuses.push(res.status)
+    }
+    assert.deepEqual(statuses, [400, 400, 400])
+    assert.deepEqual(orderFileStreams.map(({ file }) => file), [])
+  })
+
+  void it('POST placing an order with string couponData writes and closes a complete order confirmation PDF', async (t) => {
+    const orderFileStreams = spyOnOrderFileStreams(t)
+    const couponData = Buffer.from(`WMNSDY2019-${new Date('Mar 08, 2019 00:00:00 GMT+0100').getTime()}`).toString('base64')
+    const res = await request(app).post('/rest/basket/1/checkout').set(authHeader).send({ couponData })
+    assert.equal(res.status, 200)
+    assert.ok(res.body.orderConfirmation !== undefined)
+    assert.deepEqual(orderFileStreams.map(({ file }) => file), [path.join('ftp/', `order_${res.body.orderConfirmation}.pdf`)])
+
+    const [{ stream, bytes }] = orderFileStreams
+    if (!stream.closed) await once(stream, 'close')
+    const pdf = Buffer.concat(bytes).toString('latin1')
+    assert.ok(pdf.startsWith('%PDF-'))
+    assert.ok(pdf.trimEnd().endsWith('%%EOF'))
+  })
+
+  void it('POST placing an order paid by wallet with insufficient balance fails without opening an order file', async (t) => {
+    const { token } = await login(app, { email: 'admin@' + config.get<string>('application.domain'), password: 'admin123' })
+    const adminAuthHeader = { Authorization: 'Bearer ' + token, 'content-type': 'application/json' }
+    const orderFileStreams = spyOnOrderFileStreams(t)
+    const res = await request(app)
+      .post('/rest/basket/1/checkout')
+      .set(adminAuthHeader)
+      .send({ UserId: 1, orderDetails: { paymentId: 'wallet', deliveryMethodId: 1 } })
+    assert.equal(res.status, 500)
+    assert.match(res.text, /Insufficient wallet balance/)
+    assert.deepEqual(orderFileStreams.map(({ file }) => file), [])
   })
 })
 
